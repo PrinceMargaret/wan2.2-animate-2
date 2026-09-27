@@ -1,5 +1,9 @@
+import base64
+import tempfile
 import unittest
+from pathlib import Path
 
+import handler as handler_module
 from handler import handler
 
 
@@ -33,6 +37,35 @@ class HandlerTests(unittest.TestCase):
     def test_missing_workflow_is_an_error(self):
         result = handler({"id": "job", "input": {}})
         self.assertIn("workflow is required", result["error"])
+
+    def test_inline_image_in_workflow_is_saved_as_a_filename(self):
+        payload = base64.b64encode(b"png-bytes").decode()
+        original_dir = handler_module.COMFY_INPUT_DIR
+        with tempfile.TemporaryDirectory() as tmp:
+            handler_module.COMFY_INPUT_DIR = Path(tmp)
+            result = handler(
+                {
+                    "id": "job",
+                    "input": {
+                        "dry_run": True,
+                        "workflow": {
+                            "189": {
+                                "inputs": {"image": f"data:image/png;base64,{payload}"},
+                                "class_type": "LoadImage",
+                            },
+                            "6": {
+                                "inputs": {"text": "keep this prompt", "clip": ["30", 1]},
+                                "class_type": "CLIPTextEncode",
+                            },
+                        },
+                    },
+                }
+            )
+        handler_module.COMFY_INPUT_DIR = original_dir
+        self.assertEqual(result["status"], "dry_run")
+        self.assertEqual(result["workflow"]["189"]["inputs"]["image"], "189_image_0.png")
+        self.assertEqual(result["workflow"]["6"]["inputs"]["text"], "keep this prompt")
+        self.assertEqual(result["workflow"]["6"]["inputs"]["clip"], ["30", 1])
 
 
 if __name__ == "__main__":

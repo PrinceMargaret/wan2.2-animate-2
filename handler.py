@@ -134,6 +134,77 @@ def _normalize_workflow(raw) -> dict:
     return prompt
 
 
+MEDIA_INPUT_KEYS = {"image", "video", "file", "audio", "mask"}
+MEDIA_EXTENSIONS = {
+    "image": ".png",
+    "video": ".mp4",
+    "file": ".mp4",
+    "audio": ".wav",
+    "mask": ".png",
+}
+
+
+def _is_inline_media(key: str, value: str) -> bool:
+    """True when a workflow input holds a URL or base64 payload instead of a filename."""
+    if key not in MEDIA_INPUT_KEYS:
+        return False
+    text = value.strip()
+    if text.startswith(("http://", "https://", "data:")):
+        return True
+    if len(text) > 256:
+        try:
+            base64.b64decode(text, validate=True)
+        except Exception:
+            return False
+        return True
+    return False
+
+
+def _extension_for(value: str, key: str) -> str:
+    text = value.strip()
+    if text.startswith("data:"):
+        mime = text[5:].split(";", 1)[0].split(",", 1)[0].strip().lower()
+        guessed = mimetypes.guess_extension(mime) if mime else None
+        if guessed:
+            return ".jpg" if guessed == ".jpe" else guessed
+    if text.startswith(("http://", "https://")):
+        suffix = Path(urlparse(text).path).suffix.lower()
+        if suffix in IMAGE_EXTENSIONS | VIDEO_EXTENSIONS | AUDIO_EXTENSIONS:
+            return suffix
+    return MEDIA_EXTENSIONS.get(key, ".bin")
+
+
+def _rewrite_media_value(value, key: str, node_id: str, counter: list[int]):
+    if isinstance(value, str) and _is_inline_media(key, value):
+        filename = f"{node_id}_{key}_{counter[0]}{_extension_for(value, key)}"
+        counter[0] += 1
+        _write_input(_media_bytes(value), _safe_name(filename, filename))
+        return filename
+    if isinstance(value, dict):
+        return {
+            child_key: _rewrite_media_value(
+                child,
+                child_key if child_key in MEDIA_INPUT_KEYS else key,
+                node_id,
+                counter,
+            )
+            for child_key, child in value.items()
+        }
+    if isinstance(value, list):
+        if len(value) == 2 and isinstance(value[0], str) and isinstance(value[1], int):
+            return value
+        return [_rewrite_media_value(item, key, node_id, counter) for item in value]
+    return value
+
+
+def _inline_media(prompt: dict) -> dict:
+    """Save URL and base64 values found on loader inputs and replace them with filenames."""
+    counter = [0]
+    for node_id, node in prompt.items():
+        node["inputs"] = _rewrite_media_value(node["inputs"], "", node_id, counter)
+    return prompt
+
+
 def _store_media_list(items, payload_key: str, fallback_ext: str) -> list[str]:
     if items is None:
         return []
@@ -275,7 +346,7 @@ def handler(job: dict) -> dict:
     try:
         if "workflow" not in job_input:
             raise JobError("workflow is required. Pass the ComfyUI API JSON from Workflow > Export (API).")
-        prompt = _normalize_workflow(job_input.get("workflow"))
+        prompt = _inline_media(_normalize_workflow(job_input.get("workflow")))
         if _as_bool(job_input.get("dry_run"), False):
             return {"status": "dry_run", "node_count": len(prompt), "workflow": prompt}
 

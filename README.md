@@ -8,39 +8,30 @@ ComfyUI **v0.37.0** is installed. The image also includes the Wan Animate 2 dist
 
 In ComfyUI choose **Workflow > Export (API)** and send that file as `input.workflow`. The editor save (the file with `nodes` and `links`) is rejected.
 
+Put the reference image and driving video directly on the loader nodes inside `workflow`. Use an `http(s)` URL or base64 (a `data:` URI prefix is optional) in `image`, `file`, `video`, `audio`, or `mask`. The worker saves that payload and swaps in the filename before ComfyUI runs. A normal filename such as `reference.png` is left unchanged.
+
 ```json
 {
   "input": {
     "workflow": {
       "189": {
-        "inputs": {"image": "reference.png"},
+        "inputs": {"image": "https://example.com/character.png"},
         "class_type": "LoadImage"
       },
       "240": {
-        "inputs": {"file": "pose.mp4"},
+        "inputs": {"file": "https://example.com/driving.mp4"},
         "class_type": "LoadVideo"
       }
-    },
-    "images": [
-      {"name": "reference.png", "image": "https://example.com/character.png"}
-    ],
-    "videos": [
-      {"name": "pose.mp4", "video": "https://example.com/driving.mp4"}
-    ]
+    }
   }
 }
 ```
 
-`name` must match the filename already written in the workflow's Load Image or Load Video node. Each media value is an `http(s)` URL or base64 (a `data:` URI prefix is optional).
-
 | Field | Required | Notes |
 | --- | --- | --- |
-| `workflow` | yes | ComfyUI API prompt. A JSON object or a JSON string. A `{"prompt": {...}}` wrapper is accepted. |
-| `images` | no | List of `{ "name", "image" }` saved into ComfyUI's input folder. |
-| `videos` | no | List of `{ "name", "video" }` saved into ComfyUI's input folder. |
-| `files` | no | List of `{ "name", "data" }` for other inputs (audio, masks). |
+| `workflow` | yes | ComfyUI API prompt. A JSON object or a JSON string. A `{"prompt": {...}}` wrapper is accepted. Media URLs and base64 go on the loader inputs inside this object. |
 | `comfy_org_api_key` | no | Per-request key for Comfy.org API nodes. |
-| `dry_run` | no | Validate the prompt and return it. ComfyUI is not called. |
+| `dry_run` | no | Validate the prompt and return it with media inputs already replaced by filenames. ComfyUI is not called. |
 
 ### Output
 
