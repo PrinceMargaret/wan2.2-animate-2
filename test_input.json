@@ -1,9 +1,17 @@
 {
   "input": {
     "dry_run": true,
-    "width": 482,
-    "height": 854,
-    "length": 81,
-    "seed": 714297762067883
+    "workflow": {
+      "6": {
+        "inputs": {
+          "text": "a ball on the table",
+          "clip": ["30", 1]
+        },
+        "class_type": "CLIPTextEncode",
+        "_meta": {
+          "title": "CLIP Text Encode (Positive Prompt)"
+        }
+      }
+    }
   }
 }

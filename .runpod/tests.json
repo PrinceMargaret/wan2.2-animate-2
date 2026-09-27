@@ -1,12 +1,18 @@
 {
   "tests": [
     {
-      "name": "dry_run_workflow",
+      "name": "dry_run_api_workflow",
       "input": {
         "dry_run": true,
-        "width": 482,
-        "height": 854,
-        "length": 81
+        "workflow": {
+          "6": {
+            "inputs": {
+              "text": "a ball on the table",
+              "clip": ["30", 1]
+            },
+            "class_type": "CLIPTextEncode"
+          }
+        }
       },
       "timeout": 180000
     }

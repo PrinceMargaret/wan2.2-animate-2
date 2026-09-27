@@ -1,4 +1,4 @@
-"""RunPod serverless handler for the Wan Animate 2 distilled ComfyUI workflow."""
+"""RunPod serverless handler that executes any ComfyUI API workflow."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import base64
 import json
 import mimetypes
 import os
-import subprocess
 import time
 import traceback
 import uuid
@@ -15,14 +14,15 @@ from urllib.parse import urlparse
 
 import requests
 
-import workflow
-
 COMFY_HOST = os.environ.get("COMFY_HOST", "127.0.0.1:8188")
 COMFY_INPUT_DIR = Path(os.environ.get("COMFY_INPUT_DIR", "/comfyui/input"))
-COMFY_OUTPUT_DIR = Path(os.environ.get("COMFY_OUTPUT_DIR", "/comfyui/output"))
 COMFY_TIMEOUT_S = int(os.environ.get("COMFY_TIMEOUT_S", "3600"))
 MAX_INPUT_BYTES = int(os.environ.get("MAX_INPUT_MB", "200")) * 1024 * 1024
 POLL_INTERVAL_S = float(os.environ.get("COMFY_POLL_INTERVAL_S", "1.0"))
+
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}
+VIDEO_EXTENSIONS = {".mp4", ".webm", ".mkv", ".gif", ".mov"}
+AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
 
 
 class JobError(Exception):
@@ -40,7 +40,7 @@ def _as_bool(value, default: bool = False) -> bool:
 
 
 def _safe_name(name: str, fallback: str) -> str:
-    base = os.path.basename(name.strip()) or fallback
+    base = os.path.basename(str(name).replace("\\", "/").strip()) or fallback
     cleaned = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in base)
     return cleaned[:180] or fallback
 
@@ -94,79 +94,67 @@ def _media_bytes(value: str) -> bytes:
 
 def _write_input(data: bytes, filename: str) -> str:
     COMFY_INPUT_DIR.mkdir(parents=True, exist_ok=True)
-    path = COMFY_INPUT_DIR / filename
-    path.write_bytes(data)
+    target = (COMFY_INPUT_DIR / filename).resolve()
+    if COMFY_INPUT_DIR.resolve() not in target.parents and target != COMFY_INPUT_DIR.resolve():
+        raise JobError(f"Refusing to write outside the ComfyUI input directory: {filename}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
     return filename
 
 
-def _reference_bytes(job_input: dict) -> tuple[bytes, str]:
-    if job_input.get("reference_image"):
-        raw = job_input["reference_image"]
-        name = _safe_name(str(job_input.get("reference_image_name") or "reference.png"), "reference.png")
-        if raw.strip().startswith("http"):
-            guessed = os.path.basename(urlparse(raw).path)
-            if guessed and "." in guessed and job_input.get("reference_image_name") is None:
-                name = _safe_name(guessed, "reference.png")
-        return _media_bytes(raw), name
-    raise JobError("reference_image is required (URL or base64)")
+def _normalize_workflow(raw) -> dict:
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise JobError("workflow is not valid JSON") from exc
+    if not isinstance(raw, dict) or not raw:
+        raise JobError("workflow must be a non-empty ComfyUI API prompt object")
+
+    if isinstance(raw.get("prompt"), dict) and not any(
+        isinstance(value, dict) and "class_type" in value for value in raw.values()
+    ):
+        raw = raw["prompt"]
+
+    if "nodes" in raw and "links" in raw:
+        raise JobError(
+            "This is the ComfyUI editor workflow. In ComfyUI use Workflow > Export (API) and send that JSON as input.workflow."
+        )
+
+    prompt = {}
+    for node_id, node in raw.items():
+        if not isinstance(node, dict) or "class_type" not in node or "inputs" not in node:
+            raise JobError(
+                f"Node {node_id} is not an API workflow node. Each entry needs class_type and inputs. "
+                "Export the graph with Workflow > Export (API)."
+            )
+        if not isinstance(node["inputs"], dict):
+            raise JobError(f"Node {node_id} inputs must be an object")
+        prompt[str(node_id)] = node
+    return prompt
 
 
-def _pose_bytes(job_input: dict) -> tuple[bytes, str]:
-    if job_input.get("pose_video"):
-        raw = job_input["pose_video"]
-        name = _safe_name(str(job_input.get("pose_video_name") or "pose.mp4"), "pose.mp4")
-        if raw.strip().startswith("http"):
-            guessed = os.path.basename(urlparse(raw).path)
-            if guessed and "." in guessed and job_input.get("pose_video_name") is None:
-                name = _safe_name(guessed, "pose.mp4")
-        return _media_bytes(raw), name
-    raise JobError("pose_video is required (URL or base64)")
-
-
-def _probe_frames(path: Path) -> int:
-    command = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-select_streams",
-        "v:0",
-        "-show_entries",
-        "stream=nb_frames",
-        "-of",
-        "json",
-        str(path),
-    ]
-    try:
-        completed = subprocess.run(command, check=True, capture_output=True, text=True)
-        payload = json.loads(completed.stdout or "{}")
-        streams = payload.get("streams") or []
-        raw = streams[0].get("nb_frames") if streams else None
-        if raw not in (None, "N/A"):
-            count = int(raw)
-            if count > 0:
-                return count
-    except Exception:
-        pass
-
-    command = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-select_streams",
-        "v:0",
-        "-count_frames",
-        "-show_entries",
-        "stream=nb_read_frames",
-        "-of",
-        "json",
-        str(path),
-    ]
-    completed = subprocess.run(command, check=True, capture_output=True, text=True)
-    payload = json.loads(completed.stdout or "{}")
-    streams = payload.get("streams") or []
-    if not streams:
-        raise JobError("Could not read a video stream from pose_video")
-    return int(streams[0].get("nb_read_frames") or 0)
+def _store_media_list(items, payload_key: str, fallback_ext: str) -> list[str]:
+    if items is None:
+        return []
+    if not isinstance(items, list):
+        raise JobError(f"{payload_key} must be a list")
+    saved = []
+    seen = set()
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise JobError(f"{payload_key}[{index}] must be an object")
+        payload = item.get(payload_key) or item.get("image") or item.get("video") or item.get("data") or item.get("url")
+        if not payload:
+            raise JobError(f"{payload_key}[{index}] needs a URL or base64 payload")
+        fallback = f"input_{index}{fallback_ext}"
+        name = _safe_name(item.get("name") or fallback, fallback)
+        if name in seen:
+            raise JobError(f"Duplicate input filename: {name}")
+        seen.add(name)
+        _write_input(_media_bytes(payload), name)
+        saved.append(name)
+    return saved
 
 
 def _wait_for_server() -> None:
@@ -185,21 +173,20 @@ def _wait_for_server() -> None:
     raise JobError(f"ComfyUI at {COMFY_HOST} did not become ready ({last_error})")
 
 
-def _queue_prompt(prompt: dict) -> str:
+def _queue_prompt(prompt: dict, comfy_org_api_key: str | None) -> str:
     client_id = str(uuid.uuid4())
-    response = requests.post(
-        f"http://{COMFY_HOST}/prompt",
-        json={"prompt": prompt, "client_id": client_id},
-        timeout=60,
-    )
+    body: dict = {"prompt": prompt, "client_id": client_id}
+    if comfy_org_api_key:
+        body["extra_data"] = {"api_key_comfy_org": comfy_org_api_key}
+    response = requests.post(f"http://{COMFY_HOST}/prompt", json=body, timeout=60)
     if response.status_code != 200:
         raise JobError(f"ComfyUI rejected the prompt ({response.status_code}): {response.text[:2000]}")
-    body = response.json()
-    if body.get("node_errors"):
-        raise JobError(f"ComfyUI node errors: {json.dumps(body['node_errors'])[:4000]}")
-    prompt_id = body.get("prompt_id")
+    payload = response.json()
+    if payload.get("node_errors"):
+        raise JobError(f"ComfyUI node errors: {json.dumps(payload['node_errors'])[:4000]}")
+    prompt_id = payload.get("prompt_id")
     if not prompt_id:
-        raise JobError(f"ComfyUI did not return a prompt_id: {body}")
+        raise JobError(f"ComfyUI did not return a prompt_id: {payload}")
     return prompt_id
 
 
@@ -250,7 +237,7 @@ def _fetch_output(item: dict) -> bytes:
 
 
 def _maybe_upload(job_id: str, filename: str, data: bytes) -> dict:
-    suffix = Path(filename).suffix or ".mp4"
+    suffix = Path(filename).suffix or ".bin"
     if os.environ.get("BUCKET_ENDPOINT_URL"):
         from runpod.serverless.utils import rp_upload
 
@@ -265,125 +252,63 @@ def _maybe_upload(job_id: str, filename: str, data: bytes) -> dict:
     return {
         "filename": filename,
         "type": "base64",
-        "mime": mimetypes.guess_type(filename)[0] or "video/mp4",
+        "mime": mimetypes.guess_type(filename)[0] or "application/octet-stream",
         "data": base64.b64encode(data).decode("utf-8"),
     }
 
 
-def _options_from_input(job_input: dict, reference_name: str, pose_name: str, frames: int | None) -> dict:
-    length = workflow.align_length(job_input.get("length", workflow.DEFAULT_LENGTH))
-    max_chunks = int(job_input.get("max_chunks", 8))
-    if "chunks" in job_input and job_input["chunks"] is not None:
-        chunks = int(job_input["chunks"])
-    else:
-        chunks = workflow.chunk_count(
-            frames,
-            length,
-            _as_bool(job_input.get("match_video_length"), False),
-            max_chunks,
-        )
-    options = {
-        "reference_image_name": reference_name,
-        "pose_video_name": pose_name,
-        "prompt": job_input.get("prompt"),
-        "pose_prompt": job_input.get("pose_prompt"),
-        "negative_prompt": job_input.get("negative_prompt"),
-        "width": job_input.get("width", workflow.DEFAULT_WIDTH),
-        "height": job_input.get("height", workflow.DEFAULT_HEIGHT),
-        "length": length,
-        "chunks": chunks,
-        "seed": job_input.get("seed", workflow.DEFAULT_SEED),
-        "steps": job_input.get("steps", workflow.DEFAULT_STEPS),
-        "cfg": job_input.get("cfg", workflow.DEFAULT_CFG),
-        "shift": job_input.get("shift", workflow.DEFAULT_SHIFT),
-        "sampler_name": job_input.get("sampler_name", "lcm"),
-        "scheduler": job_input.get("scheduler", "simple"),
-        "denoise": job_input.get("denoise", 1.0),
-        "pose_strength": job_input.get("pose_strength", 1.0),
-        "pose_start_percent": job_input.get("pose_start_percent", 0.0),
-        "pose_end_percent": job_input.get("pose_end_percent", 1.0),
-        "reference_image_strength": job_input.get("reference_image_strength", 1.0),
-        "video_frame_offset": job_input.get("video_frame_offset", 0),
-        "enable_context_window": _as_bool(job_input.get("enable_context_window"), False),
-        "trim_duplicated_frame": _as_bool(job_input.get("trim_duplicated_frame"), False),
-        "cache_device": job_input.get("cache_device", "gpu"),
-        "cache_dtype": job_input.get("cache_dtype", "int8"),
-        "fps": job_input.get("fps"),
-        "unet_name": job_input.get("unet_name", workflow.UNET_NAME),
-        "clip_name": job_input.get("clip_name", workflow.CLIP_NAME),
-        "clip_vision_name": job_input.get("clip_vision_name", workflow.CLIP_VISION_NAME),
-        "vae_name": job_input.get("vae_name", workflow.VAE_NAME),
-    }
-    return options
+def _bucket_for(filename: str) -> str:
+    suffix = Path(filename).suffix.lower()
+    if suffix in IMAGE_EXTENSIONS:
+        return "images"
+    if suffix in VIDEO_EXTENSIONS:
+        return "videos"
+    if suffix in AUDIO_EXTENSIONS:
+        return "audio"
+    return "files"
 
 
 def handler(job: dict) -> dict:
-    """Process one RunPod job."""
+    """Run the ComfyUI API workflow supplied in the job input."""
     job_input = job.get("input") or {}
     job_id = job.get("id") or uuid.uuid4().hex
     try:
+        if "workflow" not in job_input:
+            raise JobError("workflow is required. Pass the ComfyUI API JSON from Workflow > Export (API).")
+        prompt = _normalize_workflow(job_input.get("workflow"))
         if _as_bool(job_input.get("dry_run"), False):
-            options = _options_from_input(
-                {**job_input, "reference_image": "x", "pose_video": "x"},
-                job_input.get("reference_image_name") or "reference.png",
-                job_input.get("pose_video_name") or "pose.mp4",
-                job_input.get("frame_count"),
-            )
-            prompt = workflow.build_prompt(options)
-            return {
-                "status": "dry_run",
-                "chunks": options["chunks"],
-                "width": workflow.align_dimension(options["width"]),
-                "height": workflow.align_dimension(options["height"]),
-                "length": options["length"],
-                "workflow": prompt,
-            }
+            return {"status": "dry_run", "node_count": len(prompt), "workflow": prompt}
 
-        reference, reference_name = _reference_bytes(job_input)
-        pose, pose_name = _pose_bytes(job_input)
-        stamp = uuid.uuid4().hex[:8]
-        reference_name = f"{stamp}_{reference_name}"
-        pose_name = f"{stamp}_{pose_name}"
-        _write_input(reference, reference_name)
-        pose_path = COMFY_INPUT_DIR / pose_name
-        _write_input(pose, pose_name)
+        saved_images = _store_media_list(job_input.get("images"), "image", ".png")
+        saved_videos = _store_media_list(job_input.get("videos"), "video", ".mp4")
+        saved_files = _store_media_list(job_input.get("files"), "data", ".bin")
 
-        frames = None
-        if _as_bool(job_input.get("match_video_length"), False):
-            frames = _probe_frames(pose_path)
-
-        options = _options_from_input(job_input, reference_name, pose_name, frames)
-        prompt = workflow.build_prompt(options)
         _wait_for_server()
-        prompt_id = _queue_prompt(prompt)
+        prompt_id = _queue_prompt(prompt, job_input.get("comfy_org_api_key") or os.environ.get("COMFY_ORG_API_KEY"))
         entry = _wait_for_prompt(prompt_id)
 
-        videos = []
+        grouped = {"images": [], "videos": [], "audio": [], "files": []}
         seen = set()
         for item in _iter_output_files(entry):
             filename = item["filename"]
-            if not str(filename).lower().endswith((".mp4", ".webm", ".mkv", ".gif")):
-                continue
             key = (filename, item.get("subfolder"), item.get("type"))
             if key in seen:
                 continue
             seen.add(key)
             data = _fetch_output(item)
-            videos.append(_maybe_upload(job_id, filename, data))
+            grouped[_bucket_for(filename)].append(_maybe_upload(job_id, filename, data))
 
-        if not videos:
-            raise JobError(f"ComfyUI finished without a video file. Outputs: {json.dumps(entry.get('outputs'))[:2000]}")
-
-        return {
-            "videos": videos,
-            "chunks": options["chunks"],
-            "width": workflow.align_dimension(options["width"]),
-            "height": workflow.align_dimension(options["height"]),
-            "length": options["length"],
-            "seed": int(options["seed"]),
-            "frame_count": frames,
+        result = {
             "prompt_id": prompt_id,
+            "images": grouped["images"],
+            "videos": grouped["videos"],
+            "audio": grouped["audio"],
+            "files": grouped["files"],
+            "inputs": {"images": saved_images, "videos": saved_videos, "files": saved_files},
         }
+        if not any(grouped.values()):
+            result["outputs"] = entry.get("outputs") or {}
+        return result
     except JobError as exc:
         return {"error": str(exc)}
     except Exception as exc:

@@ -1,6 +1,6 @@
 {
   "title": "Wan Animate 2 Distilled",
-  "description": "Serverless ComfyUI worker for the Wan Animate 2 distilled character-animation workflow. Reference image plus a driving video.",
+  "description": "Serverless ComfyUI worker. Send any Workflow > Export (API) JSON as input.workflow. The image includes the Wan Animate 2 distilled weights.",
   "type": "serverless",
   "category": "video",
   "iconUrl": "https://dummyimage.com/100x100/5733ff/fff&text=WAN",

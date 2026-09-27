@@ -1,72 +1,55 @@
-# Wan Animate 2 Distilled — RunPod Serverless
+# ComfyUI worker — RunPod Serverless
 
-ComfyUI worker that runs the **Wan Animate 2 distilled** character-animation workflow on [RunPod Serverless](https://docs.runpod.io/serverless/overview).
+Queue-based [RunPod Serverless](https://docs.runpod.io/serverless/overview) worker that runs **whatever ComfyUI API workflow you send**. The graph is not fixed in the handler.
 
-A reference image (who) and a driving video (the motion) produce a video of that character performing the motion. The graph matches `workflows/video_wan_animate2_distilled.json`:
-
-- diffusion model `wan_animate_2_distill_int8_convrot.safetensors`
-- text encoder `umt5_xxl_fp8_e4m3fn_scaled.safetensors` (`wan`)
-- CLIP vision `clip_vision_h.safetensors`
-- VAE `Wan2_1_VAE_bf16.safetensors`
-- LCM sampler, 10 steps, CFG 1, ModelSamplingSD3 shift 5
-- `WanAnimate2Cache` on GPU in int8
-- one 81-frame window by default (the second subgraph in the template is bypassed)
-
-ComfyUI **v0.37.0** is required. `WanAnimate2ToVideo` and `WanAnimate2Cache` are built in.
+ComfyUI **v0.37.0** is installed. The image also includes the Wan Animate 2 distilled weights, so that workflow can run without extra downloads. Any other graph runs the same way once its models are on the image or on a network volume.
 
 ## Endpoint input
+
+In ComfyUI choose **Workflow > Export (API)** and send that file as `input.workflow`. The editor save (the file with `nodes` and `links`) is rejected.
 
 ```json
 {
   "input": {
-    "reference_image": "https://example.com/character.png",
-    "pose_video": "https://example.com/driving.mp4",
-    "prompt": "Character appearance description: ...\nBackground description: ...",
-    "pose_prompt": "A person performing the motion in the driving video.",
-    "width": 482,
-    "height": 854,
-    "length": 81,
-    "seed": 714297762067883
+    "workflow": {
+      "189": {
+        "inputs": {"image": "reference.png"},
+        "class_type": "LoadImage"
+      },
+      "240": {
+        "inputs": {"file": "pose.mp4"},
+        "class_type": "LoadVideo"
+      }
+    },
+    "images": [
+      {"name": "reference.png", "image": "https://example.com/character.png"}
+    ],
+    "videos": [
+      {"name": "pose.mp4", "video": "https://example.com/driving.mp4"}
+    ]
   }
 }
 ```
 
-`reference_image` and `pose_video` are required. Each value is an `http(s)` URL or a base64 string (a `data:` URI prefix is optional).
+`name` must match the filename already written in the workflow's Load Image or Load Video node. Each media value is an `http(s)` URL or base64 (a `data:` URI prefix is optional).
 
-| Field | Default | Notes |
+| Field | Required | Notes |
 | --- | --- | --- |
-| `prompt` | template character prompt | Identity and background. |
-| `pose_prompt` | template motion prompt | Motion description for the pose branch. |
-| `negative_prompt` | template Chinese negative prompt | |
-| `width`, `height` | `482`, `854` | Rounded to a multiple of 16 (`480`×`848`). |
-| `length` | `81` | Frames per chunk. Snapped to `4n+1`. |
-| `seed` | `714297762067883` | Each extra chunk uses `seed + chunk_index`. |
-| `steps` | `10` | |
-| `cfg` | `1` | Distilled checkpoint is trained at CFG 1. |
-| `shift` | `5` | ModelSamplingSD3. |
-| `sampler_name` | `lcm` | |
-| `scheduler` | `simple` | |
-| `pose_strength` | `1` | |
-| `pose_start_percent` | `0` | |
-| `pose_end_percent` | `1` | Must be `>= pose_start_percent`. |
-| `reference_image_strength` | `1` | |
-| `video_frame_offset` | `0` | Seek into the driving video. |
-| `enable_context_window` | `false` | Turns on the template Context Windows (Manual) settings. |
-| `trim_duplicated_frame` | `false` | Drops the first decoded frame. Later chunks always drop it. |
-| `cache_device` | `gpu` | `cpu` if the int8 cache does not fit in VRAM. |
-| `cache_dtype` | `int8` | `default` or `int4`. |
-| `fps` | driving video fps | Override with a number. |
-| `chunks` | `1` | How many length-sized windows to chain. |
-| `match_video_length` | `false` | Set `true` to cover the whole driving video. |
-| `max_chunks` | `8` | Cap when `match_video_length` is set. Maximum 50. |
-| `dry_run` | `false` | Return the API prompt and do not run ComfyUI. |
-
-Videos longer than `length` frames need extra windows, the same way the template note says to duplicate the subgraph. Set `match_video_length` to `true` or pass `chunks`. Each window continues from the previous window's `continue_motion` and `video_frame_offset`.
+| `workflow` | yes | ComfyUI API prompt. A JSON object or a JSON string. A `{"prompt": {...}}` wrapper is accepted. |
+| `images` | no | List of `{ "name", "image" }` saved into ComfyUI's input folder. |
+| `videos` | no | List of `{ "name", "video" }` saved into ComfyUI's input folder. |
+| `files` | no | List of `{ "name", "data" }` for other inputs (audio, masks). |
+| `comfy_org_api_key` | no | Per-request key for Comfy.org API nodes. |
+| `dry_run` | no | Validate the prompt and return it. ComfyUI is not called. |
 
 ### Output
 
+Images, videos, and audio from Save Image / Save Video / similar nodes are returned separately. Other files land in `files`.
+
 ```json
 {
+  "prompt_id": "...",
+  "images": [],
   "videos": [
     {
       "filename": "wan_animate_00001_.mp4",
@@ -75,21 +58,18 @@ Videos longer than `length` frames need extra windows, the same way the template
       "data": "..."
     }
   ],
-  "chunks": 1,
-  "width": 480,
-  "height": 848,
-  "length": 81,
-  "seed": 714297762067883
+  "audio": [],
+  "files": []
 }
 ```
 
-When `BUCKET_ENDPOINT_URL` (and the other RunPod S3 variables) are set, each video is uploaded and `type` is `s3_url`. Base64 responses for a full clip can exceed the `/runsync` body limit. Use `/run` and S3 for long videos.
+When `BUCKET_ENDPOINT_URL` (and the other RunPod S3 variables) are set, each file is uploaded and `type` is `s3_url`. Base64 responses for a full clip can exceed the `/runsync` body limit. Use `/run` and S3 for long videos.
 
 ```bash
 curl -X POST \
   -H "Authorization: Bearer $RUNPOD_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"input":{"reference_image":"https://example.com/ref.png","pose_video":"https://example.com/drive.mp4"}}' \
+  -d @request.json \
   https://api.runpod.ai/v2/$ENDPOINT_ID/run
 ```
 
@@ -135,12 +115,8 @@ FlashBoot helps after the first worker has pulled the image.
 
 ## Local check
 
-The workflow builder does not need a GPU:
-
 ```bash
-python -m unittest tests.test_workflow
-python -c "import json; print(json.load(open('test_input.json'))['input']['dry_run'])"
-python -c "from handler import handler; import json; print(json.dumps({k: handler(json.load(open('test_input.json')))[k] for k in ('status','width','height','length','chunks')}))"
+python -m unittest tests.test_handler tests.test_workflow
 ```
 
 `python handler.py` starts the RunPod local test runner using `test_input.json` (`dry_run: true`), so it does not launch ComfyUI.

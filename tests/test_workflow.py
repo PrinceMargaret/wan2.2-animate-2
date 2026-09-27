@@ -1,7 +1,6 @@
 import unittest
 
 import workflow
-from handler import handler
 
 
 def _options(**overrides):
@@ -41,18 +40,6 @@ class WorkflowTests(unittest.TestCase):
     def test_length_snaps_to_4n_plus_1(self):
         self.assertEqual(workflow.align_length(80), 77)
         self.assertEqual(workflow.align_length(81), 81)
-
-    def test_dry_run_handler(self):
-        result = handler({"id": "job", "input": {"dry_run": True, "match_video_length": True, "frame_count": 162, "max_chunks": 4}})
-        self.assertEqual(result["status"], "dry_run")
-        self.assertEqual(result["chunks"], 2)
-        self.assertIn("100", result["workflow"])
-        self.assertIn("120", result["workflow"])
-
-    def test_missing_media_is_an_error(self):
-        result = handler({"id": "job", "input": {}})
-        self.assertIn("reference_image", result["error"])
-
 
 if __name__ == "__main__":
     unittest.main()
