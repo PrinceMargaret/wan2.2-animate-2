@@ -1,24 +1,23 @@
 {
   "tests": [
     {
-      "name": "basic_test",
+      "name": "dry_run_workflow",
       "input": {
-        "name": "John Doe"
+        "dry_run": true,
+        "width": 482,
+        "height": 854,
+        "length": 81
       },
-      "timeout": 10000
+      "timeout": 180000
     }
   ],
   "config": {
-    "gpuTypeId": "NVIDIA GeForce RTX 4090",
+    "gpuTypeId": "NVIDIA RTX A6000",
     "gpuCount": 1,
     "allowedCudaVersions": [
-      "12.7",
-      "12.6",
-      "12.5",
-      "12.4",
-      "12.3",
-      "12.2",
-      "12.1"
+      "12.8",
+      "12.9",
+      "13.0"
     ]
   }
 }

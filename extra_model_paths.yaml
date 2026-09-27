@@ -1,0 +1,6 @@
+runpod_volume:
+  base_path: /runpod-volume
+  diffusion_models: models/diffusion_models/
+  text_encoders: models/text_encoders/
+  clip_vision: models/clip_vision/
+  vae: models/vae/

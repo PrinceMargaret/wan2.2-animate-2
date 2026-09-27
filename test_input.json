@@ -1,5 +1,9 @@
 {
   "input": {
-    "name": "John Doe"
+    "dry_run": true,
+    "width": 482,
+    "height": 854,
+    "length": 81,
+    "seed": 714297762067883
   }
 }
