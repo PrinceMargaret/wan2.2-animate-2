@@ -75,25 +75,23 @@ About **25 GB**, from [Comfy-Org/Wan-Animate-2](https://huggingface.co/Comfy-Org
 | `clip_vision_h.safetensors` | `models/clip_vision` | 1.3 GB |
 | `Wan2_1_VAE_bf16.safetensors` | `models/vae` | 0.25 GB |
 
-The Docker build downloads them (`DOWNLOAD_MODELS=true`). On start, missing files are downloaded again. If `/runpod-volume` is mounted and writable, downloads go to `/runpod-volume/models/...` and ComfyUI reads them through `extra_model_paths.yaml`.
+The image does not contain these files. On first boot the worker downloads them onto the attached network volume at `/runpod-volume/models/...`. ComfyUI reads that path through `extra_model_paths.yaml`. Later workers in the same data center reuse the volume and skip the download.
 
-To keep the image small and store weights on a network volume:
+To bake the weights into the image instead:
 
 ```bash
-docker build --build-arg DOWNLOAD_MODELS=false -t wan-animate2-distilled .
+docker build --build-arg DOWNLOAD_MODELS=true -t wan-animate2-distilled .
 ```
-
-Put the four files in the volume using the folders above, in the same region as the endpoint.
 
 ## Deploy on RunPod
 
 GPU: **48 GB** is the practical target (RTX A6000 / L40 / A40). The int8 diffusion weights are ~17 GB and the pose cache is large. `cache_device=cpu` is the fallback on 24 GB cards. Host CUDA must be **12.8+** (the image uses PyTorch cu128).
 
-Container disk: **40 GB** is enough for temporary video when the weights are inside the image. The image itself is large because of those weights.
+Container disk: **20 GB** is enough for temporary video. The weights live on the network volume.
 
-1. Push this repository.
-2. In RunPod Serverless, create an endpoint **from this GitHub repo**.
-3. Dockerfile path: `Dockerfile`. Branch: the branch you deploy.
+1. Create a network volume in the data center where the endpoint will run. Size at least 50 GB.
+2. In RunPod Serverless, create an endpoint **from this GitHub repo** and attach that volume.
+3. Dockerfile path: `Dockerfile`. Branch: `cursor/wan-animate2-runpod-baff`.
 4. GPU count 1, 48 GB class, CUDA 12.8 or newer.
 5. Optional environment variables:
    - `HF_TOKEN` if Hugging Face rate-limits the weight download

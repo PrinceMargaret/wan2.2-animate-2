@@ -6,7 +6,7 @@
   "iconUrl": "https://dummyimage.com/100x100/5733ff/fff&text=WAN",
   "config": {
     "runsOn": "GPU",
-    "containerDiskInGb": 40,
+    "containerDiskInGb": 20,
     "gpuIds": "AMPERE_48",
     "gpuCount": 1,
     "allowedCudaVersions": [

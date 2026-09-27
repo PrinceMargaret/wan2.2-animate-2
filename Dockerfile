@@ -1,6 +1,6 @@
 # Wan Animate 2 distilled ComfyUI worker for RunPod Serverless.
-# Weights are about 25 GB. Set --build-arg DOWNLOAD_MODELS=false to skip them
-# and download on first boot instead (use a network volume in that case).
+# Weights are about 25 GB. They download onto the network volume at first boot.
+# Set --build-arg DOWNLOAD_MODELS=true to bake them into the image instead.
 ARG BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 FROM ${BASE_IMAGE}
 
@@ -46,7 +46,7 @@ COPY handler.py workflow.py /
 RUN chmod +x /download_models.sh /start.sh \
     && mkdir -p /comfyui/input /comfyui/output /comfyui/models
 
-ARG DOWNLOAD_MODELS=true
+ARG DOWNLOAD_MODELS=false
 RUN if [ "${DOWNLOAD_MODELS}" = "true" ]; then /download_models.sh; fi
 
 CMD ["/start.sh"]
