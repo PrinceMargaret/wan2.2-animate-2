@@ -1,0 +1,9 @@
+{
+  "name": "Wan Animate 2 RunPod Worker",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "user": "ubuntu",
+  "install": "bash .cursor/cloud-agent-install.sh"
+}
